@@ -1,4 +1,4 @@
-package metrics
+package dtmetrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
@@ -50,6 +50,22 @@ var (
 	)
 
 	//nolint: revive
+	PostDeploymentRecordUnknownArtifact = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "deptracker_post_record_unknown_artifact",
+			Help: "The total number of post attempts that resulted in no matching attestation for the container digest (404 'no artifacts found' responses)",
+		},
+	)
+
+	//nolint: revive
+	PostDeploymentRecordRateLimited = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "deptracker_post_record_rate_limited",
+			Help: "The total number of post attempts that were rate limited",
+		},
+	)
+
+	//nolint: revive
 	PostDeploymentRecordSoftFail = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "deptracker_post_record_soft_fail",
@@ -70,6 +86,14 @@ var (
 		prometheus.CounterOpts{
 			Name: "deptracker_post_record_client_error",
 			Help: "The total number of non-retryable client failures",
+		},
+	)
+
+	//nolint: revive
+	PostDeploymentRecordUnknownArtifactCacheHit = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "deptracker_post_record_unknown_artifact_cache_hit",
+			Help: "The total number of API calls avoided due to a cached 404 for an unknown artifact digest",
 		},
 	)
 )

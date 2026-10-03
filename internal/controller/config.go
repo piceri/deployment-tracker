@@ -19,12 +19,20 @@ type Config struct {
 	LogicalEnvironment  string
 	PhysicalEnvironment string
 	Cluster             string
-	APIToken            string
-	BaseURL             string
-	GHAppID             string
-	GHInstallID         string
-	GHAppPrivateKey     string
+	//nolint:gosec
+	APIToken    string
+	BaseURL     string
+	GHAppID     string
+	GHInstallID string
+	// GHAppPrivateKey must be the PEM Encoding of the
+	// private key
+	GHAppPrivateKey     []byte
+	GHAppPrivateKeyPath string
 	Organization        string
+	// BulkClusterSync enables the async cluster job endpoint for startup
+	// state sync. When false, startup sync is skipped and only individual
+	// PostOne calls are used.
+	BulkClusterSync bool
 }
 
 // ValidTemplate verifies that at least one placeholder is present

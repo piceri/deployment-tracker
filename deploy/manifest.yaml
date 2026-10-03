@@ -19,7 +19,19 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
     verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -66,7 +78,7 @@ spec:
             - name: PHYSICAL_ENVIRONMENT
               value: "iad-moda1"
             - name: CLUSTER
-              value: "kommendorkapten"
+              value: "test-cluster"
             - name: BASE_URL
               value: "http://artifact-registry.artifact-registry.svc.cluster.local:9090"
           resources:
