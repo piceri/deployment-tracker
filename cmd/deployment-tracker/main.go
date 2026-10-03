@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log"
@@ -9,10 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/github/deployment-tracker/internal/controller"
+	"github.com/github/deployment-tracker/internal/metadata"
+	k8smetadata "k8s.io/client-go/metadata"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
@@ -33,17 +37,25 @@ func getEnvOrDefault(key, defaultValue string) string {
 
 func main() {
 	var (
-		kubeconfig  string
-		namespace   string
-		workers     int
-		metricsPort string
+		kubeconfig        string
+		namespace         string
+		excludeNamespaces string
+		workers           int
+		metricsPort       string
 	)
 
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "path to kubeconfig file (uses in-cluster config if not set)")
 	flag.StringVar(&namespace, "namespace", "", "namespace to monitor (empty for all namespaces)")
+	flag.StringVar(&excludeNamespaces, "exclude-namespaces", "", "comma separated list of namespaces to exclude from monitoring (empty to include all namespaces)")
 	flag.IntVar(&workers, "workers", 2, "number of worker goroutines")
 	flag.StringVar(&metricsPort, "metrics-port", "9090", "port to listen to for metrics")
 	flag.Parse()
+
+	// Cannot use both
+	if namespace != "" && excludeNamespaces != "" {
+		slog.Error("Cannot set both -namespace and -exclude-namespaces")
+		os.Exit(1)
+	}
 
 	// Validate worker count
 	if workers < 1 || workers > 100 {
@@ -54,8 +66,23 @@ func main() {
 
 	// init logging
 	log.SetFlags(log.LstdFlags | log.Lshortfile | log.LUTC)
-	opts := slog.HandlerOptions{Level: slog.LevelInfo}
+	logLevelStr := getEnvOrDefault("LOG_LEVEL", "INFO")
+	level, msg := parseLogLevel(logLevelStr)
+	opts := slog.HandlerOptions{Level: level}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &opts)))
+	if msg != "" {
+		slog.Warn(msg)
+	}
+
+	var ghAppPrivateKey []byte
+	if b64Key := os.Getenv("GH_APP_PRIVATE_KEY"); b64Key != "" {
+		var err error
+		ghAppPrivateKey, err = base64.StdEncoding.DecodeString(b64Key)
+		if err != nil {
+			slog.Error("Failed to base64 decode GH_APP_PRIVATE_KEY", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	var cntrlCfg = controller.Config{
 		Template:            getEnvOrDefault("DN_TEMPLATE", defaultTemplate),
@@ -66,8 +93,15 @@ func main() {
 		BaseURL:             getEnvOrDefault("BASE_URL", "api.github.com"),
 		GHAppID:             getEnvOrDefault("GH_APP_ID", ""),
 		GHInstallID:         getEnvOrDefault("GH_INSTALL_ID", ""),
-		GHAppPrivateKey:     getEnvOrDefault("GH_APP_PRIV_KEY", ""),
+		GHAppPrivateKey:     ghAppPrivateKey,
+		GHAppPrivateKeyPath: getEnvOrDefault("GH_APP_PRIV_KEY_PATH", ""),
 		Organization:        os.Getenv("GITHUB_ORG"),
+		BulkClusterSync:     strings.EqualFold(getEnvOrDefault("BULK_CLUSTER_SYNC", "true"), "true"),
+	}
+
+	if len(cntrlCfg.GHAppPrivateKey) > 0 && cntrlCfg.GHAppPrivateKeyPath != "" {
+		slog.Error("Both GH_APP_PRIVATE_KEY and GH_APP_PRIV_KEY_PATH are set. Only one can be used.")
+		os.Exit(1)
 	}
 
 	if !controller.ValidTemplate(cntrlCfg.Template) {
@@ -103,6 +137,17 @@ func main() {
 			"error", err)
 		os.Exit(1)
 	}
+
+	// Create metadata client
+	metadataClient, err := k8smetadata.NewForConfig(k8sCfg)
+	if err != nil {
+		slog.Error("Error creating Kubernetes metadata client",
+			"error", err)
+		os.Exit(1)
+	}
+
+	// Create metadata aggregator
+	metadataAggregator := metadata.NewAggregator(metadataClient)
 
 	// Start the metrics server
 	var promSrv = &http.Server{
@@ -143,7 +188,7 @@ func main() {
 		cancel()
 	}()
 
-	cntrl, err := controller.New(clientset, namespace, &cntrlCfg)
+	cntrl, err := controller.New(clientset, metadataAggregator, namespace, excludeNamespaces, &cntrlCfg)
 	if err != nil {
 		slog.Error("Failed to create controller",
 			"error", err)
@@ -181,4 +226,19 @@ func createK8sConfig(kubeconfig string) (*rest.Config, error) {
 		return nil, fmt.Errorf("failed to get user home directory: %w", err)
 	}
 	return clientcmd.BuildConfigFromFlags("", homeDir+"/.kube/config")
+}
+
+func parseLogLevel(logLevel string) (slog.Level, string) {
+	switch strings.ToUpper(logLevel) {
+	case "DEBUG":
+		return slog.LevelDebug, ""
+	case "INFO":
+		return slog.LevelInfo, ""
+	case "WARN":
+		return slog.LevelWarn, ""
+	case "ERROR":
+		return slog.LevelError, ""
+	default:
+		return slog.LevelInfo, fmt.Sprintf("%s is an unsupported log level (DEBUG, WARN, INFO, ERROR), using INFO...", logLevel)
+	}
 }

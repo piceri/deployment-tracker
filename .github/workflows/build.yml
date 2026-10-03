@@ -12,15 +12,17 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    env:
+      GOFLAGS: "-mod=readonly"
     permissions:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Build
@@ -30,17 +32,38 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      GOFLAGS: "-mod=readonly"
     permissions:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install Go
-        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Install setup-envtest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@4dbfa5c66aa24a35003c41507385c2a91e94d404 # release-0.23
       - name: Test
         run: |
-          make test
+          make integration-test
+
+  helm-lint:
+    name: Helm Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - name: Lint chart
+        run: helm lint deploy/charts/deployment-tracker --set config.org=test --set config.logicalEnvironment=test --set config.cluster=test
+      - name: Validate chart rendering
+        run: helm template test deploy/charts/deployment-tracker --set config.org=test --set config.logicalEnvironment=test --set config.cluster=test > /dev/null

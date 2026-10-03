@@ -1,11 +1,5 @@
 # Deployment Tracker
 
-> [!CAUTION]
-> This project is in an early preview state and contains experimental
-> code. It is under active development and not ready for production
-> use. Breaking changes are likely, and stability or security is not
-> guaranteed. Use at your own risk.
-
 A Kubernetes controller that monitors pod lifecycles and uploads
 deployment records to GitHub's artifact metadata API.
 
@@ -23,6 +17,7 @@ deployment records to GitHub's artifact metadata API.
 - **Real-time tracking**: Sends deployment records when pods are
   created or deleted
 - **Graceful shutdown**: Properly drains work queue before terminating
+- **Runtime risks**: Track runtime risks through annotations
 
 ## How It Works
 
@@ -49,23 +44,29 @@ Two modes of authentication are supported:
 
 ## Command Line Options
 
-| Flag            | Description                          | Default                                    |
-|-----------------|--------------------------------------|--------------------------------------------|
-| `-kubeconfig`   | Path to kubeconfig file              | Uses in-cluster config or `~/.kube/config` |
-| `-namespace`    | Namespace to monitor (empty for all) | `""` (all namespaces)                      |
-| `-workers`      | Number of worker goroutines          | `2`                                        |
-| `-metrics-port` | Port number for Prometheus metrics   | 9090                                       |
+| Flag                  | Description                                                   | Default                                    |
+|-----------------------|---------------------------------------------------------------|--------------------------------------------|
+| `-kubeconfig`         | Path to kubeconfig file                                       | Uses in-cluster config or `~/.kube/config` |
+| `-namespace`          | Namespace to monitor (empty for all)                          | `""` (all namespaces)                      |
+| `-exclude-namespaces` | Comma-separated list of namespaces to exclude (empty for all) | `""` (all namespaces)                      |
+| `-workers`            | Number of worker goroutines                                   | `2`                                        |
+| `-metrics-port`       | Port number for Prometheus metrics                            | 9090                                       |
+
+> [!NOTE]
+> The `-namespace` and `-exclude-namespaces` flags cannot be used together.
 
 ## Environment Variables
 
 | Variable               | Description                                | Default                                              |
 |------------------------|--------------------------------------------|------------------------------------------------------|
+| `LOG_LEVEL`            | log level: DEBUG, INFO, WARN, ERROR        | `INFO`                                               |
 | `ORG`                  | GitHub organization name                   | (required)                                           |
 | `BASE_URL`             | API base URL                               | `api.github.com`                                     |
 | `DN_TEMPLATE`          | Deployment name template                   | `{{namespace}}/{{deploymentName}}/{{containerName}}` |
 | `LOGICAL_ENVIRONMENT`  | Logical environment name                   | (required)                                           |
 | `PHYSICAL_ENVIRONMENT` | Physical environment name                  | `""`                                                 |
 | `CLUSTER`              | Cluster name                               | (required)                                           |
+| `BULK_CLUSTER_SYNC`    | Bulk-sync cluster state at startup         | `true`                                               |
 | `API_TOKEN`            | API authentication token                   | `""`                                                 |
 | `GH_APP_ID`            | GitHub App ID                              | `""`                                                 |
 | `GH_INSTALL_ID`        | GitHub App installation ID                 | `""`                                                 |
@@ -75,8 +76,28 @@ Two modes of authentication are supported:
 
 The `DN_TEMPLATE` supports the following placeholders:
 - `{{namespace}}` - Pod namespace
-- `{{deploymentName}}` - Name of the owning Deployment
+- `{{deploymentName}}` - Name of the owning workload (Deployment, DaemonSet, StatefulSet, CronJob, or Job)
 - `{{containerName}}` - Container name
+
+## Annotations 
+Runtime risks and custom tags can be added to deployment records using annotations. Annotations will be aggregated from the pod and its owner reference objects (e.g. Deployment, ReplicaSet, DaemonSet, StatefulSet, CronJob, Job) so they can be added at any level of the ownership hierarchy.
+
+### Runtime Risks
+
+Runtime risks are risks associated with the deployment of an artifact. These risks can be used to filter GitHub Advanced Security (GHAS) alerts and add context to alert prioritization. 
+
+Add the annotation `metadata.github.com/runtime-risks`, with a comma-separated list of supported runtime risk values. Annotations are aggregated from the pod and its owner reference objects. 
+
+Currently supported runtime risks can be found in the [Create Deployment Record API docs](https://docs.github.com/en/rest/orgs/artifact-metadata?apiVersion=2022-11-28#create-an-artifact-deployment-record). Invalid runtime risk values will be ignored.
+
+### Custom Tags
+You can add custom tags to your deployment records to help filter and organize them in GitHub.
+
+Add annotations with the prefix `metadata.github.com/<key>`  (e.g. `metadata.github.com/team: payments`) to add a custom tag. Annotations are aggregated from the pod and its owner reference objects.
+
+If a key is seen at multiple levels of the ownership hierarchy, the value from the lowest level (closest to the pod) will take precedence. For example, if a tag key is present on both the pod and its owning deployment, the value from the pod will be used.
+
+Currently, a maximum of 5 custom tags are allowed per deployment record. Custom tags will be ignored after the limit is reached, meaning tags lower in the ownership hierarchy will be prioritized. Tag keys and values must be 100 characters or less in length. Invalid tags will be ignored.
 
 ## Kubernetes Deployment
 
@@ -85,7 +106,7 @@ which includes:
 
 - **Namespace**: `deployment-tracker`
 - **ServiceAccount**: Identity for the controller pod
-- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods)
+- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods, deployments, daemonsets, statefulsets, jobs, and cronjobs; `get` on replicasets)
 - **ClusterRoleBinding**: Binds the ServiceAccount to the ClusterRole
 - **Deployment**: Runs the controller with security hardening
 
@@ -115,6 +136,12 @@ The controller requires the following minimum permissions:
 | API Group | Resource | Verbs |
 |-----------|----------|-------|
 | `""` (core) | `pods` | `get`, `list`, `watch` |
+| `apps` | `deployments` | `get`, `list`, `watch` |
+| `apps` | `replicasets` | `get` |
+| `apps` | `daemonsets` | `get`, `list`, `watch` |
+| `apps` | `statefulsets` | `get`, `list`, `watch` |
+| `batch` | `jobs` | `get`, `list`, `watch` |
+| `batch` | `cronjobs` | `get`, `list`, `watch` |
 
 If you only need to monitor a single namespace, you can modify the manifest to use a `Role` and `RoleBinding` instead of `ClusterRole` and `ClusterRoleBinding` for more restricted permissions.
 
@@ -159,6 +186,14 @@ The metrics exposed beyond the default Prometheus metrics are:
   outgoing HTTP POST to upload the deployment record.
 * `deptracker_post_record_ok`: the number of successful deployment
   record uploads.
+* `deptracker_post_record_rate_limited`: the number of post attempts
+  that were rate limited.
+* `deptracker_post_record_unknown_artifact`: the number of attempts
+  that resulted in no matching attestation for the container digest
+  (404 "no artifacts found" responses) and an entry in the unknown
+  artifact cache.
+* `deptracker_post_record_unknown_artifact_cache_hit`: the number of
+  attempts to create new records prevented by the unknown artifact cache.
 * `deptracker_post_record_soft_fail`: the number of recoverable failed
   attempts to upload the deployment record.
 * `deptracker_post_record_hard_fail`: the number of failures to
